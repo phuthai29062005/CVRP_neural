@@ -119,7 +119,7 @@ def main():
     best_parent = parent[best_idx]
     best_route = route[best_idx]
 
-    fitness_file = os.path.join(BASE_DIR, "ML4VRP2026", "Solutions", "cvrp", f"{instance_name}_fitness.txt")
+    fitness_file = os.path.join(BASE_DIR, "Self_Solutions", f"{instance_name}_fitness.txt")
     os.makedirs(os.path.dirname(fitness_file), exist_ok=True)
 
     with open(fitness_file, "w") as f:
@@ -127,7 +127,7 @@ def main():
             f.write(f"{gen_num}\t{fit_val}\n")
     print(f"Saved fitness history to {fitness_file}")
 
-    route_file = os.path.join(BASE_DIR, "ML4VRP2026", "Solutions", "cvrp", f"{instance_name}_routes.txt")
+    route_file = os.path.join(BASE_DIR, "Self_Solutions", f"{instance_name}_routes.txt")
     with open(route_file, "w") as f:
         route_list = []
         current_route = []
