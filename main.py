@@ -82,7 +82,7 @@ def main():
                 par2,
                 par3,
                 use_neural_fill=True,
-                neural_ckpt_path=os.path.join("checkpoints_neural_fill", "model_epoch_30.pt"),
+                neural_ckpt_path=os.path.join("checkpoints_neural_rollout_light", "model_epoch_24.pt"),
                 neural_decode_type="greedy",
             )
 

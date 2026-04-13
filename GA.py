@@ -92,10 +92,14 @@ def get_vertices_from_routes(routes):
 
 def select_good_routes_random(good_routes, selection_prob=0.5):
     """Random chọn một số good routes."""
+    count = 0
     selected_routes = []
     for route in good_routes:
         if random.random() < selection_prob:
             selected_routes.append(route)
+            count += 1
+        if count >= 5:  # Giới hạn số route được chọn tối đa là 5
+            break
     return selected_routes
 
 
@@ -270,7 +274,7 @@ def GA(
     par2,
     par3,
     use_neural_fill=True,
-    neural_ckpt_path=os.path.join("checkpoints_neural_fill", "model_epoch_30.pt"),
+    neural_ckpt_path=os.path.join("checkpoints_neural_rollout_light", "model_epoch_24.pt"),
     neural_decode_type="greedy",
 ):
     """
