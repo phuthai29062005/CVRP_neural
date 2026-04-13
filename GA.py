@@ -13,7 +13,7 @@ from Train_Neural.cvrp_env import CVRPenv
 # Instance loading
 # =========================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-FILE_PATH = os.path.join(BASE_DIR, "ML4VRP2026", "Instances", "cvrp", "vrp", "X-n401-k29.vrp")
+FILE_PATH = os.path.join(BASE_DIR, "ML4VRP2026", "Instances", "cvrp", "vrp", "X-n101-k25.vrp")
 
 dimension, capacity, nodes = read_data(FILE_PATH)
 print(dimension, capacity)  # Kiểm tra dữ liệu đã đọc đúng chưa
@@ -34,7 +34,7 @@ def _resolve_ckpt_path(ckpt_path: str | None):
     - relative path: nối từ thư mục chứa GA.py
     """
     if ckpt_path is None:
-        ckpt_path = os.path.join("checkpoints_neural_fill", "model_epoch_30.pt")
+        ckpt_path = os.path.join("checkpoints_neural_rollout_light", "model_epoch_24.pt")
 
     if os.path.isabs(ckpt_path):
         return ckpt_path

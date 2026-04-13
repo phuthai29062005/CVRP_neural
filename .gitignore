@@ -1,0 +1,10 @@
+# Python cache/artifacts
+__pycache__/
+*.py[cod]
+
+# Training outputs and model checkpoints
+checkpoints/
+checkpoints_neural_fill/
+checkpoints_neural_rollout/
+checkpoints_neural_rollout_light/
+*.pt
