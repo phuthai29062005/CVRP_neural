@@ -6,3 +6,9 @@ __pycache__/
 checkpoints/
 checkpoints_neural_fill/
 *.pt
+
+# Allow tracking rollout checkpoints
+!Train_Neural/checkpoints_neural_rollout/
+!Train_Neural/checkpoints_neural_rollout/**/*.pt
+!checkpoints_neural_rollout_light/
+!checkpoints_neural_rollout_light/**/*.pt
