@@ -2,9 +2,17 @@ import torch
 
 
 class CVRPenv:
-    def __init__(self, num_nodes=20, capacity=None, device=None, vehicle_penalty=1000.0):
+    def __init__(
+        self,
+        num_nodes=20,
+        capacity=None,
+        device=None,
+        vehicle_penalty=1000.0,
+        use_vehicle_penalty=True,
+    ):
         self.num_nodes = num_nodes
         self.vehicle_penalty = float(vehicle_penalty)
+        self.use_vehicle_penalty = bool(use_vehicle_penalty)
 
         self.device = torch.device(
             device if device is not None else ("cuda" if torch.cuda.is_available() else "cpu")
@@ -31,7 +39,6 @@ class CVRPenv:
         self.remaining_capacity = torch.ones(batch_size, device=self.device)
         self.remaining_demands = self.demands.clone()
 
-        # debug / tracking
         self.route_count = torch.zeros(batch_size, dtype=torch.long, device=self.device)
         self.total_distance = torch.zeros(batch_size, dtype=torch.float32, device=self.device)
 
@@ -49,58 +56,44 @@ class CVRPenv:
         }
 
     def get_mask(self):
-        """
-        mask=True nghĩa là KHÔNG được chọn.
-        """
         mask = torch.zeros(self.batch_size, self.num_nodes + 1, dtype=torch.bool, device=self.device)
         done_customers = (self.remaining_demands <= 1e-9).all(dim=1)
 
-        # không cho ở depot liên tiếp nếu chưa xong
         mask[:, 0] = (self.current_node == 0) & (~done_customers)
 
         served = self.remaining_demands <= 1e-9
         over_capacity = self.remaining_demands > self.remaining_capacity[:, None]
         mask[:, 1:] = served | over_capacity
 
-        # nếu đã xong hết khách thì chỉ cho về depot
         mask[done_customers, 0] = False
         mask[done_customers, 1:] = True
 
         return mask
 
     def step(self, next_node):
-        """
-        next_node: tensor shape [B], giá trị từ 0..n
-
-        reward được thiết kế để:
-            tổng reward = -(distance + vehicle_penalty * số_route)
-        """
         next_node = next_node.long()
         B = self.batch_size
         batch_idx = torch.arange(B, device=self.device)
 
         prev_node = self.current_node.clone()
 
-        prev_loc = self.locs[batch_idx, prev_node]   # [B, 2]
-        next_loc = self.locs[batch_idx, next_node]   # [B, 2]
-        step_dist = torch.norm(prev_loc - next_loc, dim=1)   # [B]
+        prev_loc = self.locs[batch_idx, prev_node]
+        next_loc = self.locs[batch_idx, next_node]
+        step_dist = torch.norm(prev_loc - next_loc, dim=1)
 
         self.total_distance += step_dist
 
         is_customer = next_node > 0
         customer_idx = next_node - 1
 
-        # Bắt đầu 1 route mới khi rời depot sang customer
         starts_new_route = (prev_node == 0) & is_customer
         self.route_count[starts_new_route] += 1
 
-        # reward cơ bản = -distance
         reward = -step_dist
 
-        # phạt thêm theo số xe / số route
-        reward = reward - self.vehicle_penalty * starts_new_route.float()
+        if self.use_vehicle_penalty:
+            reward = reward - self.vehicle_penalty * starts_new_route.float()
 
-        # Phục vụ customer
         chosen_demand = torch.zeros(B, device=self.device)
         valid_rows = torch.where(is_customer)[0]
         if len(valid_rows) > 0:
@@ -108,7 +101,6 @@ class CVRPenv:
             self.remaining_capacity[valid_rows] -= chosen_demand[valid_rows]
             self.remaining_demands[valid_rows, customer_idx[valid_rows]] = 0.0
 
-        # Nếu về depot thì nạp đầy lại xe
         depot_rows = torch.where(~is_customer)[0]
         if len(depot_rows) > 0:
             self.remaining_capacity[depot_rows] = 1.0

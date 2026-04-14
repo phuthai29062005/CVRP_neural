@@ -82,7 +82,7 @@ def main():
                 par2,
                 par3,
                 use_neural_fill=True,
-                neural_ckpt_path=os.path.join("checkpoints_neural_rollout_light", "model_epoch_24.pt"),
+                neural_ckpt_path=os.path.join("checkpoints_neural_fill", "model_epoch_24.pt"),
                 neural_decode_type="greedy",
             )
 
@@ -119,7 +119,7 @@ def main():
     best_parent = parent[best_idx]
     best_route = route[best_idx]
 
-    fitness_file = os.path.join(BASE_DIR, "Self_Solutions", f"{instance_name}_fitness_ver2.txt")
+    fitness_file = os.path.join(BASE_DIR, "Self_Solutions", f"{instance_name}_fitness_ktra.txt")
     os.makedirs(os.path.dirname(fitness_file), exist_ok=True)
 
     with open(fitness_file, "w") as f:
@@ -127,7 +127,7 @@ def main():
             f.write(f"{gen_num}\t{fit_val}\n")
     print(f"Saved fitness history to {fitness_file}")
 
-    route_file = os.path.join(BASE_DIR, "Self_Solutions", f"{instance_name}_routes_ver2.txt")
+    route_file = os.path.join(BASE_DIR, "Self_Solutions", f"{instance_name}_routes_ktra.txt")
     with open(route_file, "w") as f:
         route_list = []
         current_route = []

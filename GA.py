@@ -34,7 +34,7 @@ def _resolve_ckpt_path(ckpt_path: str | None):
     - relative path: nối từ thư mục chứa GA.py
     """
     if ckpt_path is None:
-        ckpt_path = os.path.join("checkpoints_neural_rollout_light", "model_epoch_24.pt")
+        ckpt_path = os.path.join("checkpoints_neural_fill", "model_epoch_24.pt")
 
     if os.path.isabs(ckpt_path):
         return ckpt_path
@@ -167,6 +167,8 @@ def solve_remaining_with_neural(
     capacity,
     ckpt_path=None,
     decode_type="greedy",
+    use_vehicle_penalty=False,
+    vehicle_penalty=0.0,
 ):
     """
     Dùng neural để giải residual CVRP trên remaining_vertices.
@@ -204,6 +206,8 @@ def solve_remaining_with_neural(
         num_nodes=len(remaining_vertices),
         capacity=capacity,
         device=_NEURAL_DEVICE,
+        vehicle_penalty=vehicle_penalty,
+        use_vehicle_penalty=use_vehicle_penalty,
     )
     env.reset(batch_size=1, locs=locs, demands=demands)
 
@@ -274,7 +278,7 @@ def GA(
     par2,
     par3,
     use_neural_fill=True,
-    neural_ckpt_path=os.path.join("checkpoints_neural_rollout_light", "model_epoch_24.pt"),
+    neural_ckpt_path=os.path.join("checkpoints_neural_fill", "model_epoch_24.pt"),
     neural_decode_type="greedy",
 ):
     """
@@ -316,6 +320,8 @@ def GA(
                         capacity=capacity,
                         ckpt_path=resolved_ckpt_path,
                         decode_type=neural_decode_type,
+                        use_vehicle_penalty=False,
+                        vehicle_penalty=0.0,
                     )
                 except Exception as e:
                     if not warn_once:
