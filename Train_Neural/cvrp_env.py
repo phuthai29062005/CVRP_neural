@@ -7,13 +7,9 @@ class CVRPenv:
         num_nodes=20,
         capacity=None,
         device=None,
-        vehicle_penalty=1000.0,
-        use_vehicle_penalty=True,
+
     ):
         self.num_nodes = num_nodes
-        self.vehicle_penalty = float(vehicle_penalty)
-        self.use_vehicle_penalty = bool(use_vehicle_penalty)
-
         self.device = torch.device(
             device if device is not None else ("cuda" if torch.cuda.is_available() else "cpu")
         )
@@ -86,13 +82,7 @@ class CVRPenv:
         is_customer = next_node > 0
         customer_idx = next_node - 1
 
-        starts_new_route = (prev_node == 0) & is_customer
-        self.route_count[starts_new_route] += 1
-
         reward = -step_dist
-
-        if self.use_vehicle_penalty:
-            reward = reward - self.vehicle_penalty * starts_new_route.float()
 
         chosen_demand = torch.zeros(B, device=self.device)
         valid_rows = torch.where(is_customer)[0]

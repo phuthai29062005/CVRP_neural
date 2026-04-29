@@ -5,18 +5,95 @@ import numpy as np
 from read_data import read_data
 from GA import GA
 from caculate import get_route, get_fitness
+from Local_search.local_search import local_search
 
+
+# =========================================================
+# CONFIG
+# =========================================================
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-file_path = os.path.join(BASE_DIR, "ML4VRP2026", "Instances", "cvrp", "vrp", "X-n101-k25.vrp")
 
-dimension, capacity, nodes = read_data(file_path)
-print(dimension, capacity)
+INSTANCE_PATH = os.path.join(
+    BASE_DIR,
+    "ML4VRP2026",
+    "Instances",
+    "cvrp",
+    "vrp",
+    "X-n172-k51.vrp"
+)
 
-instance_name = os.path.basename(file_path).split(".")[0]  # X-n101-k25
+OUTPUT_DIR = os.path.join(BASE_DIR, "Self_Solutions")
+
+GENERATION = 30
+POPULATION = 100
+ELITE_RATIO = 0.10
+LOCAL_SEARCH_EVERY = 5
+LOCAL_SEARCH_ELITE_RATIO = 0.15
+
+RENEW_PATIENCE = 7
+RENEW_AFTER_GEN = 10
+RENEW_EVERY_MOD = 5
+
+USE_NEURAL_FILL = True
+NEURAL_DECODE_TYPE = "greedy"
+
+# Ưu tiên checkpoint train_v2 mới.
+# Nếu đường dẫn của bạn khác, sửa ở đây.
+NEURAL_CKPT_CANDIDATES = [
+    os.path.join(
+        BASE_DIR,
+        "Train_Neural",
+        "checkpoints_neural_fill_v2",
+        "model_best_greedy.pt"
+    ),
+    os.path.join(
+        BASE_DIR,
+        "checkpoints_neural_fill_v2",
+        "model_best_greedy.pt"
+    ),
+    os.path.join(
+        BASE_DIR,
+        "checkpoints_neural_fill",
+        "model_epoch_24.pt"
+    ),
+]
 
 
-def get_pop(population):
+# =========================================================
+# HELPERS
+# =========================================================
+
+def resolve_neural_checkpoint():
+    """
+    Tìm checkpoint neural hợp lệ.
+    """
+    if not USE_NEURAL_FILL:
+        return None
+
+    for ckpt_path in NEURAL_CKPT_CANDIDATES:
+        if os.path.exists(ckpt_path):
+            return ckpt_path
+
+    raise FileNotFoundError(
+        "No neural checkpoint found. Checked:\n"
+        + "\n".join(NEURAL_CKPT_CANDIDATES)
+    )
+
+
+def clone_list(x):
+    """
+    Copy list an toàn.
+    """
+    return x.copy() if hasattr(x, "copy") else list(x)
+
+
+def get_pop(population, dimension):
+    """
+    Tạo population ban đầu.
+    Customer id chạy từ 2 đến dimension.
+    Depot là node 1.
+    """
     parent = []
     customers = list(range(2, dimension + 1))
 
@@ -27,53 +104,257 @@ def get_pop(population):
     return parent
 
 
-def main():
-    generation = 25
-    population = 100
-
-    parent = get_pop(population)
-    route = get_route(parent, dimension, population, capacity, nodes)
-
+def evaluate_population(parent, route, nodes):
+    """
+    Tính fitness cho toàn bộ population.
+    Return:
+        fitness = [(fit, index), ...]
+    """
     fitness = []
-    for i in range(population):
+
+    for i in range(len(parent)):
         fit = get_fitness(parent[i], route[i], nodes)
         fitness.append((fit, i))
 
-    best_fitness_history = []
+    fitness.sort()
+    return fitness
 
-    for gen in range(1, generation):
+
+def update_global_best(fitness, parent, route, best_fit, best_parent, best_route):
+    """
+    Cập nhật nghiệm tốt nhất toàn cục.
+    """
+    fitness.sort()
+
+    current_best_fit, current_best_idx = fitness[0]
+
+    if current_best_fit < best_fit:
+        best_fit = current_best_fit
+        best_parent = clone_list(parent[current_best_idx])
+        best_route = clone_list(route[current_best_idx])
+        improved = True
+    else:
+        improved = False
+
+    return best_fit, best_parent, best_route, improved
+
+
+def build_index_mapping(fitness):
+    """
+    Mapping từ old_idx trong parent hiện tại sang vị trí của nó trong fitness đã sort.
+    """
+    index_mapping = {}
+
+    for sorted_pos, (_, old_idx) in enumerate(fitness):
+        index_mapping[old_idx] = sorted_pos
+
+    return index_mapping
+
+
+def should_renew(stale_count, gen):
+    """
+    Điều kiện renew population khi bị kẹt.
+    """
+    return (
+        stale_count >= RENEW_PATIENCE
+        and gen > RENEW_AFTER_GEN
+        and gen % RENEW_EVERY_MOD == 1
+    )
+
+
+def renew_population(population, dimension, capacity, nodes, best_fit, best_parent, best_route):
+    """
+    Renew population nhưng vẫn giữ nghiệm tốt nhất toàn cục ở vị trí 0.
+    """
+    parent = get_pop(population, dimension)
+    route = get_route(parent, dimension, population, capacity, nodes)
+
+    fitness = evaluate_population(parent, route, nodes)
+
+    if best_parent is not None and best_route is not None:
+        parent[0] = clone_list(best_parent)
+        route[0] = clone_list(best_route)
+        fitness[0] = (best_fit, 0)
         fitness.sort()
 
-        best_fitness = fitness[0][0]
-        print(f"Gen {gen}: Best fitness = {best_fitness}")
-        best_fitness_history.append(best_fitness)
+    return parent, route, fitness
 
-        index_mapping = {}
-        for new_idx, (fit_val, old_idx) in enumerate(fitness):
-            index_mapping[old_idx] = new_idx
 
-        new_child = []
-        new_fitness = []
+def add_individual(new_parent, new_route, new_fitness, individual, individual_route, individual_fit):
+    """
+    Thêm một cá thể vào population mới.
+    """
+    new_idx = len(new_parent)
+
+    new_parent.append(clone_list(individual))
+    new_route.append(clone_list(individual_route))
+    new_fitness.append((individual_fit, new_idx))
+
+
+def extract_route_list(best_parent, best_route):
+    """
+    Chuyển best_parent + marker best_route thành list các route.
+    marker == 1 nghĩa là bắt đầu route mới.
+    """
+    route_list = []
+    current_route = []
+
+    for j, marker in enumerate(best_route):
+        if marker == 1 and current_route:
+            route_list.append(current_route.copy())
+            current_route = [best_parent[j]]
+        else:
+            current_route.append(best_parent[j])
+
+    if current_route:
+        route_list.append(current_route)
+
+    return route_list
+
+
+def save_fitness_history(output_dir, instance_name, fitness_history):
+    """
+    Lưu lịch sử global best fitness.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+
+    fitness_file = os.path.join(
+        output_dir,
+        f"{instance_name}_fitness_ktra.txt"
+    )
+
+    with open(fitness_file, "w") as f:
+        for gen_num, fit_val in enumerate(fitness_history, start=1):
+            f.write(f"{gen_num}\t{fit_val}\n")
+
+    print(f"Saved fitness history to {fitness_file}")
+
+
+def save_best_routes(output_dir, instance_name, route_list):
+    """
+    Lưu best routes.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+
+    route_file = os.path.join(
+        output_dir,
+        f"{instance_name}_routes_ktra.txt"
+    )
+
+    with open(route_file, "w") as f:
+        for route_num, route_customers in enumerate(route_list, start=1):
+            f.write(
+                f"Route #{route_num}: "
+                f"{' '.join(map(str, route_customers))}\n"
+            )
+
+    print(f"Saved best routes to {route_file}")
+
+
+# =========================================================
+# MAIN
+# =========================================================
+
+def main():
+    dimension, capacity, nodes = read_data(INSTANCE_PATH)
+    instance_name = os.path.basename(INSTANCE_PATH).split(".")[0]
+
+    print("=" * 70)
+    print(f"Instance: {instance_name}")
+    print(f"Dimension: {dimension}")
+    print(f"Capacity: {capacity}")
+    print(f"Generation: {GENERATION}")
+    print(f"Population: {POPULATION}")
+    print("=" * 70)
+
+    neural_ckpt_path = resolve_neural_checkpoint()
+
+    if USE_NEURAL_FILL:
+        print(f"Using neural checkpoint: {neural_ckpt_path}")
+        print(f"Neural decode type: {NEURAL_DECODE_TYPE}")
+
+    # -----------------------------
+    # Initial population
+    # -----------------------------
+    parent = get_pop(POPULATION, dimension)
+    route = get_route(parent, dimension, POPULATION, capacity, nodes)
+    fitness = evaluate_population(parent, route, nodes)
+
+    best_fit = np.inf
+    best_parent = None
+    best_route = None
+
+    best_fitness_history = []
+    renew_count = 0
+    stale_count = 0
+
+    # -----------------------------
+    # Evolution loop
+    # -----------------------------
+    for gen in range(1, GENERATION + 1):
+        fitness.sort()
+
+        # Update global best before operators
+        best_fit, best_parent, best_route, improved = update_global_best(
+            fitness, parent, route, best_fit, best_parent, best_route
+        )
+
+        if improved:
+            stale_count = 0
+        else:
+            stale_count += 1
+
+        # Renew if stagnated
+        if should_renew(stale_count, gen):
+            renew_count += 1
+            stale_count = 0
+
+            parent, route, fitness = renew_population(
+                POPULATION,
+                dimension,
+                capacity,
+                nodes,
+                best_fit,
+                best_parent,
+                best_route
+            )
+
+        fitness.sort()
+        current_best = fitness[0][0]
+
+        index_mapping = build_index_mapping(fitness)
+
+        new_parent = []
         new_route = []
+        new_fitness = []
 
-        # Elite: lấy 10% tốt nhất
-        elite_count = int(population * 0.1)
+        # -----------------------------
+        # Elite selection
+        # -----------------------------
+        elite_count = int(POPULATION * ELITE_RATIO)
+
         for j in range(elite_count):
             old_idx = fitness[j][1]
-            new_child.append(parent[old_idx])
-            new_fitness.append((fitness[j][0], j))
-            new_route.append(route[old_idx])
 
-        # Crossover: 90% còn lại
-        for _ in range(population - elite_count):
-            par1 = np.random.randint(population)
-            par2 = np.random.randint(population)
-            while par2 == par1:
-                par2 = np.random.randint(population)
+            add_individual(
+                new_parent,
+                new_route,
+                new_fitness,
+                parent[old_idx],
+                route[old_idx],
+                fitness[j][0]
+            )
 
-            par3 = np.random.randint(population)
+        # -----------------------------
+        # Crossover / neural fill
+        # -----------------------------
+        for idx in range(POPULATION - elite_count):
+            par1 = fitness[idx][1]
+            par2 = fitness[(idx + 1) % POPULATION][1]
+
+            par3 = np.random.randint(POPULATION)
             while par3 == par1 or par3 == par2:
-                par3 = np.random.randint(population)
+                par3 = np.random.randint(POPULATION)
 
             child, child_route, child_fitness = GA(
                 parent,
@@ -81,73 +362,109 @@ def main():
                 par1,
                 par2,
                 par3,
-                use_neural_fill=True,
-                neural_ckpt_path=os.path.join("checkpoints_neural_fill", "model_epoch_24.pt"),
-                neural_decode_type="greedy",
+                use_neural_fill=USE_NEURAL_FILL,
+                neural_ckpt_path=neural_ckpt_path,
+                neural_decode_type=NEURAL_DECODE_TYPE,
             )
 
             par1_fitness = fitness[index_mapping[par1]][0]
             par2_fitness = fitness[index_mapping[par2]][0]
             par3_fitness = fitness[index_mapping[par3]][0]
 
-            best_parent_fitness = min(par1_fitness, par2_fitness, par3_fitness)
+            best_parent_fitness = min(
+                par1_fitness,
+                par2_fitness,
+                par3_fitness
+            )
 
+            # Chỉ nhận child nếu tốt hơn cả 3 parent.
             if child_fitness < best_parent_fitness:
-                new_child.append(child)
-                new_route.append(child_route)
-                new_fitness.append((child_fitness, len(new_child) - 1))
+                add_individual(
+                    new_parent,
+                    new_route,
+                    new_fitness,
+                    child,
+                    child_route,
+                    child_fitness
+                )
             else:
+                # Nếu child không tốt hơn, giữ parent tốt nhất trong 3 parent.
                 if par1_fitness <= par2_fitness and par1_fitness <= par3_fitness:
-                    new_child.append(parent[par1])
-                    new_route.append(route[par1])
-                    new_fitness.append((par1_fitness, len(new_child) - 1))
+                    selected_idx = par1
+                    selected_fit = par1_fitness
                 elif par2_fitness <= par3_fitness:
-                    new_child.append(parent[par2])
-                    new_route.append(route[par2])
-                    new_fitness.append((par2_fitness, len(new_child) - 1))
+                    selected_idx = par2
+                    selected_fit = par2_fitness
                 else:
-                    new_child.append(parent[par3])
-                    new_route.append(route[par3])
-                    new_fitness.append((par3_fitness, len(new_child) - 1))
+                    selected_idx = par3
+                    selected_fit = par3_fitness
 
-        parent = new_child
+                add_individual(
+                    new_parent,
+                    new_route,
+                    new_fitness,
+                    parent[selected_idx],
+                    route[selected_idx],
+                    selected_fit
+                )
+
+        parent = new_parent
         route = new_route
         fitness = new_fitness
 
-    fitness.sort()
-    best_idx = fitness[0][1]
-    best_parent = parent[best_idx]
-    best_route = route[best_idx]
+        # -----------------------------
+        # Local search
+        # -----------------------------
+        if gen % LOCAL_SEARCH_EVERY == 0:
+            parent, route, fitness = local_search(
+                parent,
+                capacity,
+                nodes,
+                route,
+                fitness,
+                elite_ratio=LOCAL_SEARCH_ELITE_RATIO
+            )
 
-    fitness_file = os.path.join(BASE_DIR, "Self_Solutions", f"{instance_name}_fitness_ktra.txt")
-    os.makedirs(os.path.dirname(fitness_file), exist_ok=True)
+        fitness.sort()
 
-    with open(fitness_file, "w") as f:
-        for gen_num, fit_val in enumerate(best_fitness_history, start=1):
-            f.write(f"{gen_num}\t{fit_val}\n")
-    print(f"Saved fitness history to {fitness_file}")
+        # Update global best after operators/local search
+        best_fit, best_parent, best_route, improved_after = update_global_best(
+            fitness, parent, route, best_fit, best_parent, best_route
+        )
 
-    route_file = os.path.join(BASE_DIR, "Self_Solutions", f"{instance_name}_routes_ktra.txt")
-    with open(route_file, "w") as f:
-        route_list = []
-        current_route = []
+        if improved_after:
+            stale_count = 0
 
-        for j, marker in enumerate(best_route):
-            if marker == 1 and current_route:
-                route_list.append(current_route.copy())
-                current_route = [best_parent[j]]
-            else:
-                current_route.append(best_parent[j])
+        best_fitness_history.append(best_fit)
 
-        if current_route:
-            route_list.append(current_route)
+        print(
+            f"Gen {gen:03d}/{GENERATION} | "
+            f"Current best = {fitness[0][0]:.4f} | "
+            f"Global best = {best_fit:.4f} | "
+            f"Renew = {renew_count}"
+        )
 
-        for route_num, route_customers in enumerate(route_list, start=1):
-            f.write(f"Route #{route_num}: {' '.join(map(str, route_customers))}\n")
+    # -----------------------------
+    # Save results
+    # -----------------------------
+    route_list = extract_route_list(best_parent, best_route)
 
-    print(f"Saved best routes to {route_file}")
-    print(f"Best fitness: {fitness[0][0]}")
+    save_fitness_history(
+        OUTPUT_DIR,
+        instance_name,
+        best_fitness_history
+    )
+
+    save_best_routes(
+        OUTPUT_DIR,
+        instance_name,
+        route_list
+    )
+
+    print("=" * 70)
+    print(f"Best fitness: {best_fit}")
     print(f"Number of routes: {len(route_list)}")
+    print("=" * 70)
 
 
 if __name__ == "__main__":
