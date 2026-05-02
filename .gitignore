@@ -7,4 +7,4 @@ checkpoints/
 checkpoints_neural_fill/
 checkpoints_neural_rollout_light/
 *.pt
-
+!checkpoints_neural_fill_v2/*.pt
