@@ -54,14 +54,14 @@ CAPACITY = {
 }
 
 # Full training config for RTX 3060
-EPOCHS = 50
+EPOCHS = 70
 BATCHES_PER_EPOCH = 1500
 
 # Nếu muốn test nhanh trước, đổi tạm:
 # EPOCHS = 2
 # BATCHES_PER_EPOCH = 20
 
-LR = 1e-4
+LR = 3e-5
 GRAD_CLIP = 1.0
 
 LOG_EVERY = 100
@@ -76,6 +76,9 @@ USE_AMP = torch.cuda.is_available()
 SAVE_DIR = "checkpoints_neural_fill_v2"
 os.makedirs(SAVE_DIR, exist_ok=True)
 
+
+RESUME = True
+RESUME_PATH = os.path.join(SAVE_DIR, "model_latest.pt")
 
 # =========================================================
 # DATA GENERATION
@@ -351,7 +354,7 @@ optimizer = optim.Adam(model.parameters(), lr=LR)
 
 scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
     optimizer,
-    T_max=EPOCHS,
+    T_max=20,
     eta_min=1e-5,
 )
 
@@ -361,6 +364,43 @@ val_sets = build_validation_sets()
 
 best_val_greedy = float("inf")
 best_val_sampling = float("inf")
+
+START_EPOCH = 1
+
+if RESUME and os.path.exists(RESUME_PATH):
+    print(f"Loading checkpoint from: {RESUME_PATH}")
+
+    checkpoint = torch.load(
+        RESUME_PATH,
+        map_location=device,
+        weights_only=False
+    )
+
+    model.load_state_dict(checkpoint["model_state_dict"])
+    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    
+    for param_group in optimizer.param_groups:
+        param_group["lr"] = 3e-5
+    #if "scheduler_state_dict" in checkpoint:
+    #    scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+
+    if "scaler_state_dict" in checkpoint:
+        scaler.load_state_dict(checkpoint["scaler_state_dict"])
+
+    best_val_greedy = checkpoint.get("best_val_greedy", best_val_greedy)
+    best_val_sampling = checkpoint.get("best_val_sampling", best_val_sampling)
+
+    START_EPOCH = checkpoint["epoch"] + 1
+
+    print(f"Resumed from epoch {checkpoint['epoch']}")
+    print(f"Continue training from epoch {START_EPOCH}")
+    print(f"Best greedy so far: {best_val_greedy}")
+    print(f"Best sampling so far: {best_val_sampling}")
+
+else:
+    print("No checkpoint loaded. Training from scratch.")
+
+
 
 print("=" * 80)
 print("TRAIN CONFIG")
@@ -380,7 +420,7 @@ print("=" * 80)
 # TRAIN LOOP
 # =========================================================
 
-for epoch in range(EPOCHS):
+for epoch in range(START_EPOCH - 1, EPOCHS):
     model.train()
 
     start_time = time.time()
@@ -511,6 +551,7 @@ for epoch in range(EPOCHS):
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
                 "scheduler_state_dict": scheduler.state_dict(),
+                "scaler_state_dict": scaler.state_dict(),
                 "val_greedy": val_greedy,
                 "val_greedy_detail": val_greedy_detail,
                 "train_node_sizes": TRAIN_NODE_SIZES,
@@ -549,6 +590,7 @@ for epoch in range(EPOCHS):
                     "model_state_dict": model.state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),
                     "scheduler_state_dict": scheduler.state_dict(),
+                    "scaler_state_dict": scaler.state_dict(),
                     "val_sampling_best16": val_sampling,
                     "val_sampling_detail": val_sampling_detail,
                     "train_node_sizes": TRAIN_NODE_SIZES,
@@ -573,6 +615,7 @@ for epoch in range(EPOCHS):
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
             "scheduler_state_dict": scheduler.state_dict(),
+            "scaler_state_dict": scaler.state_dict(),
             "avg_train_cost": avg_train_cost,
             "avg_train_loss": avg_train_loss,
             "val_greedy": val_greedy,
@@ -595,6 +638,7 @@ for epoch in range(EPOCHS):
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
             "scheduler_state_dict": scheduler.state_dict(),
+            "scaler_state_dict": scaler.state_dict(),
             "avg_train_cost": avg_train_cost,
             "avg_train_loss": avg_train_loss,
             "val_greedy": val_greedy,
@@ -625,6 +669,7 @@ torch.save(
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
         "scheduler_state_dict": scheduler.state_dict(),
+        "scaler_state_dict": scaler.state_dict(),
         "best_val_greedy": best_val_greedy,
         "best_val_sampling": best_val_sampling,
         "train_node_sizes": TRAIN_NODE_SIZES,
