@@ -2,13 +2,13 @@ from caculate import separate_routes
 from Local_search.local_search_utils import route_distance, rebuild_solution, euclid, DEPOT_ID
 
 
-def opt_2(parent, route, fitness, nodes):
+def opt_2(parent, route, fitness, nodes, dist_matrix=None, nearest_neighbors=None):
     """
     Intra-route 2-opt với first improvement + delta O(1).
     Fitness tổng thể không đổi số route, nên chỉ cần xét delta distance trong route.
     """
     routes = separate_routes(parent, route)
-    route_costs = [route_distance(r, nodes) for r in routes]
+    route_costs = [route_distance(r, nodes, dist_matrix) for r in routes]
 
     improved = True
     while improved:
@@ -31,8 +31,22 @@ def opt_2(parent, route, fitness, nodes):
 
                     # bỏ move vô nghĩa khi cắt cạnh liền nhau ở giữa route vẫn cho phép,
                     # nhưng delta vẫn đúng nên không cần skip riêng
-                    delta = -euclid(nodes, a, b) - euclid(nodes, c, d) \
-                            + euclid(nodes, a, c) + euclid(nodes, b, d)
+                    if nearest_neighbors is not None:
+                        # 2-opt tốt thường tạo cạnh mới giữa các node gần nhau.
+                        if (
+                            c not in nearest_neighbors.get(a, set())
+                            and a not in nearest_neighbors.get(c, set())
+                            and d not in nearest_neighbors.get(b, set())
+                            and b not in nearest_neighbors.get(d, set())
+                        ):
+                            continue
+
+                    delta = (
+                        -euclid(nodes, a, b, dist_matrix)
+                        -euclid(nodes, c, d, dist_matrix)
+                        + euclid(nodes, a, c, dist_matrix)
+                        + euclid(nodes, b, d, dist_matrix)
+                    )
 
                     if delta < -1e-12:
                         # apply first improvement

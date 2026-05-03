@@ -20,17 +20,15 @@ class AttentionLayer(nn.Module):
             nn.Linear(512, embedding_dim),
         )
 
-        self.bn1 = nn.BatchNorm1d(embedding_dim)
-        self.bn2 = nn.BatchNorm1d(embedding_dim)
+        self.norm1 = nn.LayerNorm(embedding_dim)
+        self.norm2 = nn.LayerNorm(embedding_dim)
 
     def forward(self, h):
         mha_out = self.mha(h, h, h, need_weights=False)[0]
-        h = h + mha_out
-        h = self.bn1(h.transpose(1, 2)).transpose(1, 2)
+        h = self.norm1(h + mha_out)
 
         ff_out = self.ff(h)
-        h = h + ff_out
-        h = self.bn2(h.transpose(1, 2)).transpose(1, 2)
+        h = self.norm2(h + ff_out)
 
         return h
 

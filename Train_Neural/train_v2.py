@@ -40,7 +40,7 @@ if torch.cuda.is_available():
 
 # RTX 3060 12GB safe setting
 BASE_BATCH_SIZE = 64
-ROLLOUTS_PER_INSTANCE = 4
+ROLLOUTS_PER_INSTANCE = 8
 EFFECTIVE_BATCH = BASE_BATCH_SIZE * ROLLOUTS_PER_INSTANCE
 
 TRAIN_NODE_SIZES = [50, 80, 100, 120, 150]
@@ -63,6 +63,7 @@ BATCHES_PER_EPOCH = 1500
 
 LR = 3e-5
 GRAD_CLIP = 1.0
+WARMUP_EPOCHS = 2
 
 LOG_EVERY = 100
 SAMPLING_VALIDATE_EVERY = 5
@@ -271,7 +272,7 @@ def validate_greedy(model, val_sets):
 
 
 @torch.no_grad()
-def validate_sampling_best(model, val_sets, samples=16, chunk_samples=4):
+def validate_sampling_best(model, val_sets, samples=64, chunk_samples=8):
     """
     Sampling validation: sample nhiều nghiệm rồi lấy best.
     Chia chunk để tránh nổ VRAM.
@@ -354,7 +355,7 @@ optimizer = optim.Adam(model.parameters(), lr=LR)
 
 scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
     optimizer,
-    T_max=20,
+    T_max=EPOCHS-WARMUP_EPOCHS,
     eta_min=1e-5,
 )
 
@@ -379,10 +380,8 @@ if RESUME and os.path.exists(RESUME_PATH):
     model.load_state_dict(checkpoint["model_state_dict"])
     optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
     
-    for param_group in optimizer.param_groups:
-        param_group["lr"] = 3e-5
-    #if "scheduler_state_dict" in checkpoint:
-    #    scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+    if "scheduler_state_dict" in checkpoint:
+        scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
 
     if "scaler_state_dict" in checkpoint:
         scaler.load_state_dict(checkpoint["scaler_state_dict"])
@@ -421,6 +420,15 @@ print("=" * 80)
 # =========================================================
 
 for epoch in range(START_EPOCH - 1, EPOCHS):
+    
+    current_epoch = epoch + 1
+
+    # LR warmup chỉ chạy khi train từ đầu, không chạy lại khi resume
+    if current_epoch <= WARMUP_EPOCHS and START_EPOCH == 1:
+        warmup_lr = LR * current_epoch / WARMUP_EPOCHS
+        for param_group in optimizer.param_groups:
+            param_group["lr"] = warmup_lr
+            
     model.train()
 
     start_time = time.time()
@@ -513,7 +521,8 @@ for epoch in range(START_EPOCH - 1, EPOCHS):
                 f"avg_loss={epoch_loss / (batch_id + 1):.4f}"
             )
 
-    scheduler.step()
+    if current_epoch > WARMUP_EPOCHS:
+        scheduler.step()
 
     # =====================================================
     # END OF EPOCH: VALIDATION
@@ -525,13 +534,13 @@ for epoch in range(START_EPOCH - 1, EPOCHS):
     avg_train_loss = epoch_loss / BATCHES_PER_EPOCH
 
     val_greedy, val_greedy_detail = validate_greedy(model, val_sets)
-
+    current_lr = optimizer.param_groups[0]["lr"]
     print(
         f"\nEpoch {epoch + 1:03d}/{EPOCHS} finished | "
         f"train_cost={avg_train_cost:.4f} | "
         f"train_loss={avg_train_loss:.4f} | "
         f"val_greedy={val_greedy:.4f} | "
-        f"lr={scheduler.get_last_lr()[0]:.6f} | "
+        f"lr={current_lr:.6f} | "
         f"time={epoch_time:.2f}s"
     )
     print(f"Validation greedy detail: {val_greedy_detail}")
@@ -568,15 +577,16 @@ for epoch in range(START_EPOCH - 1, EPOCHS):
     # SAMPLING VALIDATION EVERY FEW EPOCHS
     # =====================================================
 
+
     if (epoch + 1) % SAMPLING_VALIDATE_EVERY == 0:
         val_sampling, val_sampling_detail = validate_sampling_best(
             model,
             val_sets,
-            samples=16,
-            chunk_samples=4,
+            samples=64,
+            chunk_samples=8,
         )
 
-        print(f"Validation sampling best-of-16: {val_sampling:.4f}")
+        print(f"Validation sampling best-of-64: {val_sampling:.4f}")
         print(f"Validation sampling detail: {val_sampling_detail}")
 
         if val_sampling < best_val_sampling:
@@ -591,7 +601,7 @@ for epoch in range(START_EPOCH - 1, EPOCHS):
                     "optimizer_state_dict": optimizer.state_dict(),
                     "scheduler_state_dict": scheduler.state_dict(),
                     "scaler_state_dict": scaler.state_dict(),
-                    "val_sampling_best16": val_sampling,
+                    "val_sampling_best64": val_sampling,
                     "val_sampling_detail": val_sampling_detail,
                     "train_node_sizes": TRAIN_NODE_SIZES,
                     "base_batch_size": BASE_BATCH_SIZE,
@@ -630,59 +640,17 @@ for epoch in range(START_EPOCH - 1, EPOCHS):
         latest_path,
     )
 
-    epoch_path = os.path.join(SAVE_DIR, f"model_epoch_{epoch + 1}.pt")
-
-    torch.save(
-        {
-            "epoch": epoch + 1,
-            "model_state_dict": model.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-            "scheduler_state_dict": scheduler.state_dict(),
-            "scaler_state_dict": scaler.state_dict(),
-            "avg_train_cost": avg_train_cost,
-            "avg_train_loss": avg_train_loss,
-            "val_greedy": val_greedy,
-            "val_greedy_detail": val_greedy_detail,
-            "best_val_greedy": best_val_greedy,
-            "best_val_sampling": best_val_sampling,
-            "train_node_sizes": TRAIN_NODE_SIZES,
-            "base_batch_size": BASE_BATCH_SIZE,
-            "rollouts_per_instance": ROLLOUTS_PER_INSTANCE,
-            "capacity": CAPACITY,
-        },
-        epoch_path,
-    )
 
     print(f"Saved latest checkpoint: {latest_path}")
-    print(f"Saved epoch checkpoint: {epoch_path}\n")
 
 
 # =========================================================
 # SAVE FINAL MODEL
 # =========================================================
 
-final_path = os.path.join(SAVE_DIR, "model_final.pt")
-
-torch.save(
-    {
-        "epoch": EPOCHS,
-        "model_state_dict": model.state_dict(),
-        "optimizer_state_dict": optimizer.state_dict(),
-        "scheduler_state_dict": scheduler.state_dict(),
-        "scaler_state_dict": scaler.state_dict(),
-        "best_val_greedy": best_val_greedy,
-        "best_val_sampling": best_val_sampling,
-        "train_node_sizes": TRAIN_NODE_SIZES,
-        "base_batch_size": BASE_BATCH_SIZE,
-        "rollouts_per_instance": ROLLOUTS_PER_INSTANCE,
-        "capacity": CAPACITY,
-    },
-    final_path,
-)
 
 print("=" * 80)
 print("Training finished.")
-print(f"Final model saved to: {final_path}")
 print(f"Best greedy validation cost: {best_val_greedy:.4f}")
 print(f"Best sampling validation cost: {best_val_sampling:.4f}")
 print("=" * 80)

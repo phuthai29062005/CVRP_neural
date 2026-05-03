@@ -1,6 +1,15 @@
 import numpy as np
 import random
 
+def get_dist(nodes, a, b, dist_matrix=None):
+    if dist_matrix is not None:
+        return float(dist_matrix[a, b])
+
+    return np.sqrt(
+        (nodes[a]["x"] - nodes[b]["x"]) ** 2
+        + (nodes[a]["y"] - nodes[b]["y"]) ** 2
+    )
+    
 def get_route(parent, dimension, population, capacity, nodes):
     """
     Tạo route markers cho mỗi parent
@@ -33,26 +42,17 @@ def get_route(parent, dimension, population, capacity, nodes):
         route.append(first_route)
     return route
 
-def get_fitness(parent, route, nodes):
-    """
-    Tính fitness (1000*num_routes + total_distance)
-    
-    Args:
-        parent: Hoán vị khách hàng [2, 3, 4, ..., 101]
-        route: Route markers [1, 0, 0, 1, 0, ...]
-        nodes: Dictionary chứa info các nút
-    
-    Returns:
-        fitness = 1000 * num_routes + total_distance
-    """
-    # Tách các route riêng lẻ
+def get_fitness(parent, route, nodes, dist_matrix=None):
     routes = separate_routes(parent, route)
-    
-    # Tính total distance từ tất cả routes
+
     total_distance = 0
     for route_customers in routes:
-        total_distance += calculate_route_distance(route_customers, nodes)
-    
+        total_distance += calculate_route_distance(
+            route_customers,
+            nodes,
+            dist_matrix,
+        )
+
     num_routes = len(routes)
     fitness = 1000 * num_routes + total_distance
     return fitness
@@ -87,69 +87,40 @@ def separate_routes(parent, route):
     return routes
 
 
-def calculate_route_distance(route_customers, nodes):
-    """
-    Tính tổng khoảng cách của 1 route
-    
-    Args:
-        route_customers: Danh sách khách hàng trong route [c1, c2, c3, ...]
-        nodes: Dictionary chứa tọa độ các nút
-    
-    Returns:
-        Tổng khoảng cách (không tính đi về depot)
-    """
+def calculate_route_distance(route_customers, nodes, dist_matrix=None):
     distance = 0
-    
-    # Tính khoảng cách từ depot (node 1) đến khách hàng đầu tiên
-    distance += np.sqrt((nodes[route_customers[0]]['x'] - nodes[1]['x'])**2 + 
-                       (nodes[route_customers[0]]['y'] - nodes[1]['y'])**2)
-    
-    # Tính khoảng cách giữa các khách hàng trong route
+
+    distance += get_dist(nodes, 1, route_customers[0], dist_matrix)
+
     for i in range(1, len(route_customers)):
-        distance += np.sqrt((nodes[route_customers[i]]['x'] - nodes[route_customers[i-1]]['x'])**2 + 
-                           (nodes[route_customers[i]]['y'] - nodes[route_customers[i-1]]['y'])**2)
-    
-    # Tính khoảng cách từ khách hàng cuối cùng về depot (node 1)
-    distance += np.sqrt((nodes[route_customers[-1]]['x'] - nodes[1]['x'])**2 + 
-                       (nodes[route_customers[-1]]['y'] - nodes[1]['y'])**2)
-    
+        distance += get_dist(
+            nodes,
+            route_customers[i - 1],
+            route_customers[i],
+            dist_matrix,
+        )
+
+    distance += get_dist(nodes, route_customers[-1], 1, dist_matrix)
+
     return distance
 
 
-def get_good_routes(parent, route, nodes, num_good_routes=5):
-    """
-    Lấy các route tốt nhất (có score thấp nhất) từ 1 parent
-    
-    Args:
-        parent: Hoán vị khách hàng [c1, c2, c3, ...]
-        route: Danh sách marker [1, 0, 0, 1, 0, 1, ...]
-        nodes: Dictionary chứa tọa độ các nút
-        num_good_routes: Số route tốt nhất cần lấy (mặc định 5)
-    
-    Returns:
-        Danh sách 5 route tốt nhất: [[route1], [route2], ...]
-        Danh sách score tương ứng: [score1, score2, ...]
-    """
-    # Tách các route riêng lẻ
+def get_good_routes(parent, route, nodes, num_good_routes=5, dist_matrix=None):
     routes = separate_routes(parent, route)
-    
-    # Tính score cho mỗi route
+
     route_scores = []
     for r in routes:
-        distance = calculate_route_distance(r, nodes)
+        distance = calculate_route_distance(r, nodes, dist_matrix)
         num_customers = len(r)
-        # Score = (1000 + distance) / số khách hàng
         score = (1000 + distance) / num_customers
         route_scores.append((score, r))
-    
-    # Sắp xếp theo score (tăng dần) và lấy 5 route có score thấp nhất
+
     route_scores.sort(key=lambda x: x[0])
     good_routes_with_scores = route_scores[:num_good_routes]
-    
-    # Tách riêng danh sách route và score
+
     good_routes = [r[1] for r in good_routes_with_scores]
     good_scores = [r[0] for r in good_routes_with_scores]
-    
+
     return good_routes, good_scores
 
 
