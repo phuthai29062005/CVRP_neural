@@ -23,7 +23,7 @@ FILE_PATH = os.path.join(
     "Instances",
     "cvrp",
     "vrp",
-    "X-n172-k51.vrp",
+    "X-n129-k18.vrp",
 )
 
 dimension, capacity, nodes = read_data(FILE_PATH)
@@ -50,7 +50,7 @@ def _resolve_ckpt_path(ckpt_path: Optional[str]) -> str:
         ckpt_path = os.path.join(
             "Train_Neural",
             "checkpoints_neural_fill_v2",
-            "model_best_greedy.pt",
+            "model_best_sampling.pt",
         )
 
     if os.path.isabs(ckpt_path):
@@ -428,7 +428,7 @@ def solve_remaining_with_neural(
     nodes_data,
     capacity_value: float,
     ckpt_path: Optional[str] = None,
-    decode_type: str = "greedy",
+    decode_type: str = "sampling",
 ) -> Tuple[List[int], List[int]]:
     """
     Dùng neural để giải residual CVRP trên remaining_vertices.
@@ -536,13 +536,13 @@ def GA(
     neural_ckpt_path: Optional[str] = os.path.join(
         "Train_Neural",
         "checkpoints_neural_fill_v2",
-        "model_best_greedy.pt",
+        "model_best_sampling.pt",
     ),
-    neural_decode_type: str = "greedy",
-    num_good_routes_per_parent: int = 5,
-    max_kept_routes: int = 5,
-    selection_trials: int = 5,
-    route_select_temperature: float = 0.7,
+    neural_decode_type: str = "sampling",
+    num_good_routes_per_parent: int = 7,
+    max_kept_routes: int = 7,
+    selection_trials: int = 10,
+    route_select_temperature: float = 0.8,
 ):
     """
     GA crossover:

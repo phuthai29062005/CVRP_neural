@@ -20,23 +20,23 @@ INSTANCE_PATH = os.path.join(
     "Instances",
     "cvrp",
     "vrp",
-    "X-n172-k51.vrp"
+    "X-n129-k18.vrp"
 )
 
-OUTPUT_DIR = os.path.join(BASE_DIR, "Self_Solutions")
+OUTPUT_DIR = os.path.join(BASE_DIR, "New_Solutions")
 
-GENERATION = 30
+GENERATION = 50
 POPULATION = 100
 ELITE_RATIO = 0.10
 LOCAL_SEARCH_EVERY = 5
-LOCAL_SEARCH_ELITE_RATIO = 0.15
+LOCAL_SEARCH_ELITE_RATIO = 0.20
 
-RENEW_PATIENCE = 7
-RENEW_AFTER_GEN = 10
-RENEW_EVERY_MOD = 5
+RENEW_PATIENCE = 8
+RENEW_AFTER_GEN = 8
+
 
 USE_NEURAL_FILL = True
-NEURAL_DECODE_TYPE = "greedy"
+NEURAL_DECODE_TYPE = "sampling"
 
 # Ưu tiên checkpoint train_v2 mới.
 # Nếu đường dẫn của bạn khác, sửa ở đây.
@@ -45,17 +45,12 @@ NEURAL_CKPT_CANDIDATES = [
         BASE_DIR,
         "Train_Neural",
         "checkpoints_neural_fill_v2",
-        "model_best_greedy.pt"
+        "model_best_sampling.pt"
     ),
     os.path.join(
         BASE_DIR,
         "checkpoints_neural_fill_v2",
-        "model_best_greedy.pt"
-    ),
-    os.path.join(
-        BASE_DIR,
-        "checkpoints_neural_fill",
-        "model_epoch_24.pt"
+        "model_best_sampling.pt"
     ),
 ]
 
@@ -153,29 +148,27 @@ def build_index_mapping(fitness):
 
 def should_renew(stale_count, gen):
     """
-    Điều kiện renew population khi bị kẹt.
+    Renew khi global best không cải thiện sau một số generation.
     """
     return (
         stale_count >= RENEW_PATIENCE
         and gen > RENEW_AFTER_GEN
-        and gen % RENEW_EVERY_MOD == 1
     )
 
 
-def renew_population(population, dimension, capacity, nodes, best_fit, best_parent, best_route):
+def renew_population(population, dimension, capacity, nodes):
     """
-    Renew population nhưng vẫn giữ nghiệm tốt nhất toàn cục ở vị trí 0.
+    Renew population hoàn toàn mới.
+    Không nhét global best vào population mới.
+
+    Global best vẫn được giữ riêng bằng:
+        best_fit, best_parent, best_route
+
+    Như vậy Current best sau renew phản ánh đúng population mới.
     """
     parent = get_pop(population, dimension)
     route = get_route(parent, dimension, population, capacity, nodes)
-
     fitness = evaluate_population(parent, route, nodes)
-
-    if best_parent is not None and best_route is not None:
-        parent[0] = clone_list(best_parent)
-        route[0] = clone_list(best_route)
-        fitness[0] = (best_fit, 0)
-        fitness.sort()
 
     return parent, route, fitness
 
@@ -220,7 +213,7 @@ def save_fitness_history(output_dir, instance_name, fitness_history):
 
     fitness_file = os.path.join(
         output_dir,
-        f"{instance_name}_fitness_ktra.txt"
+        f"{instance_name}_fitness.txt"
     )
 
     with open(fitness_file, "w") as f:
@@ -238,7 +231,7 @@ def save_best_routes(output_dir, instance_name, route_list):
 
     route_file = os.path.join(
         output_dir,
-        f"{instance_name}_routes_ktra.txt"
+        f"{instance_name}_routes.txt"
     )
 
     with open(route_file, "w") as f:
@@ -284,6 +277,8 @@ def main():
     best_parent = None
     best_route = None
 
+    phase_best_fit = np.inf
+    
     best_fitness_history = []
     renew_count = 0
     stale_count = 0
@@ -292,14 +287,17 @@ def main():
     # Evolution loop
     # -----------------------------
     for gen in range(1, GENERATION + 1):
-        fitness.sort()
-
-        # Update global best before operators
-        best_fit, best_parent, best_route, improved = update_global_best(
+        # Update global best: lưu nghiệm tốt nhất toàn bộ quá trình
+        best_fit, best_parent, best_route, improved_global = update_global_best(
             fitness, parent, route, best_fit, best_parent, best_route
         )
 
-        if improved:
+        # Update phase best: dùng để quyết định renew
+        fitness.sort()
+        current_phase_best = fitness[0][0]
+
+        if current_phase_best < phase_best_fit:
+            phase_best_fit = current_phase_best
             stale_count = 0
         else:
             stale_count += 1
@@ -313,11 +311,12 @@ def main():
                 POPULATION,
                 dimension,
                 capacity,
-                nodes,
-                best_fit,
-                best_parent,
-                best_route
+                nodes
             )
+
+            # Reset phase sau khi renew
+            fitness.sort()
+            phase_best_fit = fitness[0][0]
 
         fitness.sort()
         current_best = fitness[0][0]
@@ -352,9 +351,9 @@ def main():
             par1 = fitness[idx][1]
             par2 = fitness[(idx + 1) % POPULATION][1]
 
-            par3 = np.random.randint(POPULATION)
+            par3 = np.random.randint(len(parent))
             while par3 == par1 or par3 == par2:
-                par3 = np.random.randint(POPULATION)
+                par3 = np.random.randint(len(parent))
 
             child, child_route, child_fitness = GA(
                 parent,
@@ -427,20 +426,34 @@ def main():
 
         fitness.sort()
 
-        # Update global best after operators/local search
-        best_fit, best_parent, best_route, improved_after = update_global_best(
+        best_fit, best_parent, best_route, improved_after_global = update_global_best(
             fitness, parent, route, best_fit, best_parent, best_route
         )
 
-        if improved_after:
+        fitness.sort()
+        current_phase_best = fitness[0][0]
+
+        if current_phase_best < phase_best_fit:
+            phase_best_fit = current_phase_best
             stale_count = 0
 
         best_fitness_history.append(best_fit)
 
+        fitness.sort()
+        current_best = fitness[0][0]
+        current_best_idx = fitness[0][1]
+        current_route_count = sum(route[current_best_idx])
+
+        global_route_count = sum(best_route) if best_route is not None else 0
+
         print(
             f"Gen {gen:03d}/{GENERATION} | "
-            f"Current best = {fitness[0][0]:.4f} | "
+            f"Current best = {current_best:.4f} | "
+            f"Current routes = {current_route_count} | "
+            f"Phase best = {phase_best_fit:.4f} | "
             f"Global best = {best_fit:.4f} | "
+            f"Global routes = {global_route_count} | "
+            f"Stale = {stale_count} | "
             f"Renew = {renew_count}"
         )
 
