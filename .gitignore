@@ -7,4 +7,4 @@ checkpoints/
 checkpoints_neural_fill/
 checkpoints_neural_rollout_light/
 *.pt
-!Train_Neural/checkpoints_neural_fill_v2/*.pt
+!/checkpoints_neural_fill_new_v2/*.pt

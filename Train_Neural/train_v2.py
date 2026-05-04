@@ -39,8 +39,8 @@ if torch.cuda.is_available():
     torch.cuda.manual_seed_all(SEED)
 
 # RTX 3060 12GB safe setting
-BASE_BATCH_SIZE = 64
-ROLLOUTS_PER_INSTANCE = 8
+BASE_BATCH_SIZE = 32
+ROLLOUTS_PER_INSTANCE = 4
 EFFECTIVE_BATCH = BASE_BATCH_SIZE * ROLLOUTS_PER_INSTANCE
 
 TRAIN_NODE_SIZES = [50, 80, 100, 120, 150]
@@ -61,7 +61,7 @@ BATCHES_PER_EPOCH = 1500
 # EPOCHS = 2
 # BATCHES_PER_EPOCH = 20
 
-LR = 3e-5
+LR = 5e-5
 GRAD_CLIP = 1.0
 WARMUP_EPOCHS = 2
 
@@ -74,7 +74,7 @@ VAL_MODES = ["uniform", "cluster"]
 
 USE_AMP = torch.cuda.is_available()
 
-SAVE_DIR = "checkpoints_neural_fill_v2"
+SAVE_DIR = "checkpoints_neural_fill_new_v2"
 os.makedirs(SAVE_DIR, exist_ok=True)
 
 
@@ -582,11 +582,11 @@ for epoch in range(START_EPOCH - 1, EPOCHS):
         val_sampling, val_sampling_detail = validate_sampling_best(
             model,
             val_sets,
-            samples=64,
-            chunk_samples=8,
+            samples=32,
+            chunk_samples=4,
         )
 
-        print(f"Validation sampling best-of-64: {val_sampling:.4f}")
+        print(f"Validation sampling best-of-32: {val_sampling:.4f}")
         print(f"Validation sampling detail: {val_sampling_detail}")
 
         if val_sampling < best_val_sampling:
