@@ -6,10 +6,6 @@ from read_data import read_data
 from GA import GA
 from caculate import get_route, get_fitness
 from Local_search.local_search import local_search
-from Local_search.local_search_utils import (
-    build_distance_matrix,
-    build_k_nearest_neighbors,
-)
 
 
 # =========================================================
@@ -24,16 +20,16 @@ INSTANCE_PATH = os.path.join(
     "Instances",
     "cvrp",
     "vrp",
-    "X-n101-k25.vrp"
+    "X-n153-k22.vrp"
 )
 
-OUTPUT_DIR = os.path.join(BASE_DIR, "New_Solutions")
+OUTPUT_DIR = os.path.join(BASE_DIR, "New_Solutions_final")
 
 GENERATION = 50
 POPULATION = 100
 ELITE_RATIO = 0.10
 LOCAL_SEARCH_EVERY = 5
-LOCAL_SEARCH_ELITE_RATIO = 0.20
+LOCAL_SEARCH_ELITE_RATIO = 0.30
 
 RENEW_PATIENCE = 8
 RENEW_AFTER_GEN = 8
@@ -103,11 +99,16 @@ def get_pop(population, dimension):
     return parent
 
 
-def evaluate_population(parent, route, nodes, dist_matrix):
+def evaluate_population(parent, route, nodes):
+    """
+    Tính fitness cho toàn bộ population.
+    Return:
+        fitness = [(fit, index), ...]
+    """
     fitness = []
 
     for i in range(len(parent)):
-        fit = get_fitness(parent[i], route[i], nodes, dist_matrix)
+        fit = get_fitness(parent[i], route[i], nodes)
         fitness.append((fit, i))
 
     fitness.sort()
@@ -155,10 +156,19 @@ def should_renew(stale_count, gen):
     )
 
 
-def renew_population(population, dimension, capacity, nodes, dist_matrix):
+def renew_population(population, dimension, capacity, nodes):
+    """
+    Renew population hoàn toàn mới.
+    Không nhét global best vào population mới.
+
+    Global best vẫn được giữ riêng bằng:
+        best_fit, best_parent, best_route
+
+    Như vậy Current best sau renew phản ánh đúng population mới.
+    """
     parent = get_pop(population, dimension)
     route = get_route(parent, dimension, population, capacity, nodes)
-    fitness = evaluate_population(parent, route, nodes, dist_matrix)
+    fitness = evaluate_population(parent, route, nodes)
 
     return parent, route, fitness
 
@@ -240,14 +250,6 @@ def save_best_routes(output_dir, instance_name, route_list):
 
 def main():
     dimension, capacity, nodes = read_data(INSTANCE_PATH)
-    
-    dist_matrix = build_distance_matrix(nodes, dimension)
-    nearest_neighbors = build_k_nearest_neighbors(
-        dist_matrix,
-        dimension,
-        k=10,
-    )
-    
     instance_name = os.path.basename(INSTANCE_PATH).split(".")[0]
 
     print("=" * 70)
@@ -269,7 +271,7 @@ def main():
     # -----------------------------
     parent = get_pop(POPULATION, dimension)
     route = get_route(parent, dimension, POPULATION, capacity, nodes)
-    fitness = evaluate_population(parent, route, nodes, dist_matrix)
+    fitness = evaluate_population(parent, route, nodes)
 
     best_fit = np.inf
     best_parent = None
@@ -309,8 +311,7 @@ def main():
                 POPULATION,
                 dimension,
                 capacity,
-                nodes,
-                dist_matrix,
+                nodes
             )
 
             # Reset phase sau khi renew
@@ -360,14 +361,22 @@ def main():
                 par1,
                 par2,
                 par3,
-                dimension=dimension,
-                capacity=capacity,
-                nodes=nodes,
-                dist_matrix=dist_matrix,
-                nearest_neighbors=nearest_neighbors,
                 use_neural_fill=USE_NEURAL_FILL,
                 neural_ckpt_path=neural_ckpt_path,
                 neural_decode_type=NEURAL_DECODE_TYPE,
+
+                # lấy candidate đủ rộng
+                num_good_routes_per_parent=12,
+
+                # giữ 25% route tốt
+                keep_route_ratio=0.25,
+
+                # tránh quá ít/quá nhiều
+                min_kept_routes=3,
+                max_kept_routes_cap=12,
+
+                selection_trials=8,
+                route_select_temperature=0.9,
             )
 
             par1_fitness = fitness[index_mapping[par1]][0]
@@ -418,16 +427,14 @@ def main():
         # -----------------------------
         # Local search
         # -----------------------------
-        if gen % LOCAL_SEARCH_EVERY == 0:
+        if gen % LOCAL_SEARCH_EVERY == 0 or stale_count >= 7:
             parent, route, fitness = local_search(
                 parent,
                 capacity,
                 nodes,
                 route,
                 fitness,
-                elite_ratio=LOCAL_SEARCH_ELITE_RATIO,
-                dist_matrix=dist_matrix,
-                nearest_neighbors=nearest_neighbors,
+                elite_ratio=LOCAL_SEARCH_ELITE_RATIO
             )
 
         fitness.sort()

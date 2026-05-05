@@ -3,12 +3,12 @@ import random
 
 def get_dist(nodes, a, b, dist_matrix=None):
     if dist_matrix is not None:
-        return float(dist_matrix[a, b])
+        return int(dist_matrix[a, b])
 
-    return np.sqrt(
-        (nodes[a]["x"] - nodes[b]["x"]) ** 2
-        + (nodes[a]["y"] - nodes[b]["y"]) ** 2
-    )
+    dx = nodes[a]["x"] - nodes[b]["x"]
+    dy = nodes[a]["y"] - nodes[b]["y"]
+
+    return int(np.sqrt(dx * dx + dy * dy) + 0.5)
     
 def get_route(parent, dimension, population, capacity, nodes):
     """

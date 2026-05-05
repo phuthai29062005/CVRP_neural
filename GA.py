@@ -5,18 +5,29 @@ from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 import numpy as np
 import torch
 
+from read_data import read_data
+from caculate import get_good_routes, get_fitness
 from Train_Neural.cvrp_model import CVRPModel
 from Train_Neural.cvrp_env import CVRPenv
 
 
 # =========================================================
-# CONSTANTS
+# INSTANCE CONFIG
 # =========================================================
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-DEPOT_ID = 1
-ROUTE_PENALTY = 1000.0
+FILE_PATH = os.path.join(
+    BASE_DIR,
+    "ML4VRP2026",
+    "Instances",
+    "cvrp",
+    "vrp",
+    "X-n153-k22.vrp",
+)
+
+dimension, capacity, nodes = read_data(FILE_PATH)
+print(f"[GA] Loaded instance: dimension={dimension}, capacity={capacity}")
 
 
 # =========================================================
@@ -25,7 +36,7 @@ ROUTE_PENALTY = 1000.0
 
 _NEURAL_MODEL = None
 _NEURAL_CKPT_LOADED = None
-_NEURAL_FAILED_CKPTS: Set[str] = set()
+_NEURAL_LOAD_FAILED = False
 _NEURAL_DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
@@ -37,6 +48,7 @@ def _resolve_ckpt_path(ckpt_path: Optional[str]) -> str:
     """
     if ckpt_path is None:
         ckpt_path = os.path.join(
+            BASE_DIR,
             "Train_Neural",
             "checkpoints_neural_fill_v2",
             "model_best_sampling.pt",
@@ -57,20 +69,18 @@ def _load_neural_model(
     """
     Load neural model một lần, cache lại để GA không phải load checkpoint nhiều lần.
     """
-    global _NEURAL_MODEL, _NEURAL_CKPT_LOADED
+    global _NEURAL_MODEL, _NEURAL_CKPT_LOADED, _NEURAL_LOAD_FAILED
 
     resolved_ckpt_path = _resolve_ckpt_path(ckpt_path)
 
     if _NEURAL_MODEL is not None and _NEURAL_CKPT_LOADED == resolved_ckpt_path:
         return _NEURAL_MODEL
 
-    if resolved_ckpt_path in _NEURAL_FAILED_CKPTS:
-        raise FileNotFoundError(
-            f"Neural checkpoint was already attempted and failed: {resolved_ckpt_path}"
-        )
+    if _NEURAL_LOAD_FAILED:
+        raise FileNotFoundError("Neural model was already attempted and failed to load.")
 
     if not os.path.exists(resolved_ckpt_path):
-        _NEURAL_FAILED_CKPTS.add(resolved_ckpt_path)
+        _NEURAL_LOAD_FAILED = True
         raise FileNotFoundError(f"Checkpoint not found: {resolved_ckpt_path}")
 
     model = CVRPModel(
@@ -79,17 +89,7 @@ def _load_neural_model(
         num_layers=num_layers,
     ).to(_NEURAL_DEVICE)
 
-    try:
-        ckpt = torch.load(
-            resolved_ckpt_path,
-            map_location=_NEURAL_DEVICE,
-            weights_only=False,
-        )
-    except TypeError:
-        ckpt = torch.load(
-            resolved_ckpt_path,
-            map_location=_NEURAL_DEVICE,
-        )
+    ckpt = torch.load(resolved_ckpt_path, map_location=_NEURAL_DEVICE)
 
     if isinstance(ckpt, dict) and "model_state_dict" in ckpt:
         model.load_state_dict(ckpt["model_state_dict"])
@@ -102,14 +102,13 @@ def _load_neural_model(
     _NEURAL_CKPT_LOADED = resolved_ckpt_path
 
     print(f"[INFO] Loaded neural model from: {resolved_ckpt_path}")
-
     return _NEURAL_MODEL
 
 
 def _make_env(num_nodes: int, capacity_value: float, device: torch.device):
     """
-    Tạo CVRPenv. Có fallback để tránh lỗi nếu cvrp_env.py
-    không có use_vehicle_penalty / vehicle_penalty.
+    Tạo CVRPenv. Có fallback để tránh lỗi nếu cvrp_env.py của bạn
+    không còn tham số vehicle_penalty/use_vehicle_penalty.
     """
     try:
         return CVRPenv(
@@ -128,85 +127,8 @@ def _make_env(num_nodes: int, capacity_value: float, device: torch.device):
 
 
 # =========================================================
-# DISTANCE + ROUTE UTILS
+# BASIC ROUTE UTILS
 # =========================================================
-
-def _distance(
-    nodes_data: Dict[int, Dict[str, Any]],
-    a: int,
-    b: int,
-    dist_matrix=None,
-) -> float:
-    """
-    Lấy distance giữa 2 node.
-    Ưu tiên dùng dist_matrix đã precompute.
-    """
-    if dist_matrix is not None:
-        return float(dist_matrix[a, b])
-
-    dx = float(nodes_data[a]["x"]) - float(nodes_data[b]["x"])
-    dy = float(nodes_data[a]["y"]) - float(nodes_data[b]["y"])
-
-    return float(np.hypot(dx, dy))
-
-
-def _separate_routes(
-    permutation: Sequence[int],
-    route_markers: Sequence[int],
-) -> List[List[int]]:
-    """
-    Tách permutation + route markers thành list routes.
-    marker = 1 nghĩa là bắt đầu route mới.
-    """
-    routes = []
-    current_route = []
-
-    for customer, marker in zip(permutation, route_markers):
-        if marker == 1:
-            if current_route:
-                routes.append(current_route)
-
-            current_route = [customer]
-        else:
-            current_route.append(customer)
-
-    if current_route:
-        routes.append(current_route)
-
-    return routes
-
-
-def _route_distance(
-    route_seg: Sequence[int],
-    nodes_data: Dict[int, Dict[str, Any]],
-    dist_matrix=None,
-) -> float:
-    """
-    Tính distance của 1 route:
-        depot -> customers -> depot
-    Depot là node 1.
-    """
-    if len(route_seg) == 0:
-        return 0.0
-
-    total = 0.0
-    prev = DEPOT_ID
-
-    for customer in route_seg:
-        total += _distance(nodes_data, prev, customer, dist_matrix)
-        prev = customer
-
-    total += _distance(nodes_data, prev, DEPOT_ID, dist_matrix)
-
-    return total
-
-
-def _route_demand(
-    route_seg: Sequence[int],
-    nodes_data: Dict[int, Dict[str, Any]],
-) -> float:
-    return float(sum(nodes_data[v]["demand"] for v in route_seg))
-
 
 def get_vertices_from_routes(routes: Sequence[Sequence[int]]) -> Set[int]:
     vertices = set()
@@ -217,60 +139,89 @@ def get_vertices_from_routes(routes: Sequence[Sequence[int]]) -> Set[int]:
     return vertices
 
 
-def _solution_fitness(
-    permutation: Sequence[int],
-    route_markers: Sequence[int],
-    nodes_data: Dict[int, Dict[str, Any]],
-    dist_matrix=None,
-) -> float:
+def _euc_2d_distance(a: Dict[str, Any], b: Dict[str, Any]) -> int:
+    dx = float(a["x"]) - float(b["x"])
+    dy = float(a["y"]) - float(b["y"])
+    return int(np.sqrt(dx * dx + dy * dy) + 0.5)
+
+
+def _euclidean_distance(a: Dict[str, Any], b: Dict[str, Any]) -> int:
+    # Giữ tên cũ để không phải sửa các chỗ gọi bên dưới
+    return _euc_2d_distance(a, b)
+
+
+def _route_distance(route_seg: Sequence[int]) -> float:
     """
-    Objective:
-        fitness = 1000 * number_of_routes + total_distance
-    """
-    routes = _separate_routes(permutation, route_markers)
-
-    total_distance = 0.0
-    for r in routes:
-        total_distance += _route_distance(r, nodes_data, dist_matrix)
-
-    return ROUTE_PENALTY * len(routes) + total_distance
-
-
-def _route_score(
-    route_seg: Sequence[int],
-    nodes_data: Dict[int, Dict[str, Any]],
-    capacity_value: float,
-    dist_matrix=None,
-) -> float:
-    """
-    Score càng nhỏ càng tốt.
-
-    Dùng:
-        distance/customer
-        + penalty nhẹ nếu route dùng tải kém
-        + penalty nếu quá capacity
+    Tính distance của một route: depot -> customers -> depot.
+    Depot là node 1.
     """
     if len(route_seg) == 0:
         return float("inf")
 
-    dist = _route_distance(route_seg, nodes_data, dist_matrix)
-    demand = _route_demand(route_seg, nodes_data)
+    total = 0.0
+    prev = 1
+
+    for v in route_seg:
+        total += _euclidean_distance(nodes[prev], nodes[v])
+        prev = v
+
+    total += _euclidean_distance(nodes[prev], nodes[1])
+    return total
+
+
+def _route_demand(route_seg: Sequence[int]) -> float:
+    return float(sum(nodes[v]["demand"] for v in route_seg))
+
+
+def _fallback_route_score(route_seg: Sequence[int]) -> float:
+    """
+    Score càng nhỏ càng tốt.
+
+    Dùng distance/customer để tránh việc route ngắn chỉ có 1 customer
+    luôn được ưu tiên quá mạnh. Thêm penalty nhẹ nếu route dùng tải kém.
+    """
+    if len(route_seg) == 0:
+        return float("inf")
+
+    dist = _route_distance(route_seg)
+    demand = _route_demand(route_seg)
 
     distance_per_customer = dist / max(len(route_seg), 1)
 
-    load_ratio = demand / max(float(capacity_value), 1e-9)
+    load_ratio = demand / max(float(capacity), 1e-9)
     unused_capacity_penalty = max(0.0, 1.0 - load_ratio)
 
     over_capacity_penalty = 0.0
-    if demand > capacity_value:
-        over_capacity_penalty = 1000.0 * ((demand - capacity_value) / capacity_value)
+    if demand > capacity:
+        over_capacity_penalty = 1000.0 * ((demand - capacity) / capacity)
 
     return distance_per_customer + 0.2 * unused_capacity_penalty + over_capacity_penalty
 
 
-def _flatten_kept_routes(
-    kept_routes: Sequence[Sequence[int]],
-) -> Tuple[List[int], List[int]]:
+def _safe_score_from_get_good_routes(
+    returned_scores: Any,
+    route_rank: int,
+    route_seg: Sequence[int],
+) -> float:
+    """
+    Nếu get_good_routes trả về score thì dùng score đó.
+    Nếu không đọc được score thì tự tính bằng _fallback_route_score().
+    """
+    if isinstance(returned_scores, (list, tuple)) and route_rank < len(returned_scores):
+        candidate_score = returned_scores[route_rank]
+
+        if isinstance(candidate_score, (int, float, np.integer, np.floating)):
+            return float(candidate_score)
+
+        if isinstance(candidate_score, (list, tuple)):
+            for x in candidate_score:
+                if isinstance(x, (int, float, np.integer, np.floating)):
+                    return float(x)
+
+    return _fallback_route_score(route_seg)
+
+
+def _flatten_kept_routes(kept_routes: Sequence[Sequence[int]]) -> Tuple[List[int], List[int]]:
     """
     kept_routes = [[...], [...], ...]
     -> child_permutation + route_markers
@@ -293,15 +244,7 @@ def _flatten_kept_routes(
 # WEIGHTED-GREEDY ROUTE SELECTION
 # =========================================================
 
-def _collect_route_candidates(
-    parent,
-    route,
-    parent_indices: Sequence[int],
-    nodes_data: Dict[int, Dict[str, Any]],
-    capacity_value: float,
-    dist_matrix=None,
-    num_good_routes: int = 7,
-) -> List[Dict[str, Any]]:
+def _collect_route_candidates(parent, route, parent_indices, num_good_routes: int):
     """
     Lấy good routes từ các parent và gán score cho từng route.
 
@@ -312,40 +255,33 @@ def _collect_route_candidates(
             "parent_idx": int,
             "rank": int,
         }
-
-    Không gọi get_good_routes() nữa để tránh tính euclid lặp lại.
-    Dùng trực tiếp dist_matrix nếu có.
     """
     candidates = []
 
     for p_idx in parent_indices:
-        routes = _separate_routes(parent[p_idx], route[p_idx])
+        good_routes, returned_scores = get_good_routes(
+            parent[p_idx],
+            route[p_idx],
+            nodes,
+            num_good_routes=num_good_routes,
+        )
 
-        scored_routes = []
-
-        for route_seg in routes:
+        for rank, route_seg in enumerate(good_routes):
             route_seg = list(route_seg)
 
             if len(route_seg) == 0:
                 continue
 
             route_vertices = set(route_seg)
-
             if len(route_vertices) != len(route_seg):
                 continue
 
-            score = _route_score(
+            score = _safe_score_from_get_good_routes(
+                returned_scores=returned_scores,
+                route_rank=rank,
                 route_seg=route_seg,
-                nodes_data=nodes_data,
-                capacity_value=capacity_value,
-                dist_matrix=dist_matrix,
             )
 
-            scored_routes.append((score, route_seg))
-
-        scored_routes.sort(key=lambda x: x[0])
-
-        for rank, (score, route_seg) in enumerate(scored_routes[:num_good_routes]):
             candidates.append(
                 {
                     "route": route_seg,
@@ -356,14 +292,10 @@ def _collect_route_candidates(
             )
 
     candidates.sort(key=lambda x: x["score"])
-
     return candidates
 
 
-def _weighted_choice_by_score(
-    candidates: Sequence[Dict[str, Any]],
-    temperature: float,
-):
+def _weighted_choice_by_score(candidates: Sequence[Dict[str, Any]], temperature: float):
     """
     Chọn một route theo xác suất.
     Score càng nhỏ thì xác suất càng cao.
@@ -388,21 +320,19 @@ def _weighted_choice_by_score(
     weights = np.exp(-normalized / temperature)
 
     weight_sum = weights.sum()
-
     if not np.isfinite(weight_sum) or weight_sum <= 0:
         weights = np.ones_like(weights) / len(weights)
     else:
         weights = weights / weight_sum
 
     chosen_idx = np.random.choice(len(candidates), p=weights)
-
     return candidates[int(chosen_idx)]
 
 
 def select_good_routes_weighted_greedy(
     route_candidates: Sequence[Dict[str, Any]],
-    max_kept_routes: int = 7,
-    temperature: float = 0.8,
+    max_kept_routes: int = 5,
+    temperature: float = 0.7,
 ) -> List[List[int]]:
     """
     Chọn route giữ lại theo kiểu weighted-greedy.
@@ -439,6 +369,7 @@ def select_good_routes_weighted_greedy(
         kept_routes.append(chosen_route)
         used_vertices.update(chosen_vertices)
 
+        # Loại bỏ route đã chọn và mọi route có trùng customer với used_vertices.
         available = [
             cand
             for cand in available
@@ -452,10 +383,7 @@ def select_good_routes_weighted_greedy(
 # FILL REMAINING CUSTOMERS
 # =========================================================
 
-def _normalize_subproblem_coords(
-    depot_xy: np.ndarray,
-    customer_xy: np.ndarray,
-) -> np.ndarray:
+def _normalize_subproblem_coords(depot_xy: np.ndarray, customer_xy: np.ndarray) -> np.ndarray:
     """
     Normalize tọa độ về [0,1] theo bounding box của subproblem.
     """
@@ -463,7 +391,6 @@ def _normalize_subproblem_coords(
 
     min_xy = all_xy.min(axis=0, keepdims=True)
     max_xy = all_xy.max(axis=0, keepdims=True)
-
     scale = np.maximum(max_xy - min_xy, 1e-8)
 
     return (all_xy - min_xy) / scale
@@ -471,7 +398,7 @@ def _normalize_subproblem_coords(
 
 def _random_fill_remaining(
     remaining_vertices: Sequence[int],
-    nodes_data: Dict[int, Dict[str, Any]],
+    nodes_data,
     capacity_value: float,
 ) -> Tuple[List[int], List[int]]:
     """
@@ -489,12 +416,10 @@ def _random_fill_remaining(
             permutation.append(vertex)
             markers.append(1)
             current_load = demand
-
         elif current_load + demand <= capacity_value:
             permutation.append(vertex)
             markers.append(0)
             current_load += demand
-
         else:
             permutation.append(vertex)
             markers.append(1)
@@ -506,10 +431,10 @@ def _random_fill_remaining(
 @torch.no_grad()
 def solve_remaining_with_neural(
     remaining_vertices: Sequence[int],
-    nodes_data: Dict[int, Dict[str, Any]],
+    nodes_data,
     capacity_value: float,
     ckpt_path: Optional[str] = None,
-    decode_type: str = "sampling",
+    decode_type: str = "greedy",
 ) -> Tuple[List[int], List[int]]:
     """
     Dùng neural để giải residual CVRP trên remaining_vertices.
@@ -526,15 +451,12 @@ def solve_remaining_with_neural(
     model = _load_neural_model(ckpt_path=ckpt_path)
 
     depot_xy = np.array(
-        [nodes_data[DEPOT_ID]["x"], nodes_data[DEPOT_ID]["y"]],
+        [nodes_data[1]["x"], nodes_data[1]["y"]],
         dtype=np.float32,
     )
 
     customer_xy = np.array(
-        [
-            [nodes_data[v]["x"], nodes_data[v]["y"]]
-            for v in remaining_vertices
-        ],
+        [[nodes_data[v]["x"], nodes_data[v]["y"]] for v in remaining_vertices],
         dtype=np.float32,
     )
 
@@ -547,12 +469,7 @@ def solve_remaining_with_neural(
     ).unsqueeze(0)
 
     demands = torch.tensor(
-        [
-            [
-                nodes_data[v]["demand"] / capacity_value
-                for v in remaining_vertices
-            ]
-        ],
+        [[nodes_data[v]["demand"] / capacity_value for v in remaining_vertices]],
         dtype=torch.float32,
         device=_NEURAL_DEVICE,
     )
@@ -563,11 +480,7 @@ def solve_remaining_with_neural(
         device=_NEURAL_DEVICE,
     )
 
-    env.reset(
-        batch_size=1,
-        locs=locs,
-        demands=demands,
-    )
+    env.reset(batch_size=1, locs=locs, demands=demands)
 
     state = env.get_state()
     embeddings = model._get_embeddings(state["locs"], state["demands"])
@@ -619,28 +532,62 @@ def solve_remaining_with_neural(
 # MAIN GA CROSSOVER
 # =========================================================
 
+def _count_routes(route_markers):
+    """
+    Đếm số route từ route marker.
+    marker = 1 nghĩa là bắt đầu route mới.
+    """
+    return sum(1 for x in route_markers if x == 1)
+
+
+def _compute_kept_routes_by_ratio(route, parent_indices, keep_ratio, min_keep=1, max_keep=None):
+    """
+    Tính số route sẽ giữ lại theo % route của các parent.
+
+    Ví dụ:
+    - parent có khoảng 30 route
+    - keep_ratio = 0.25
+    => giữ khoảng 8 route
+    """
+    route_counts = [_count_routes(route[p_idx]) for p_idx in parent_indices]
+
+    avg_routes = sum(route_counts) / max(len(route_counts), 1)
+
+    kept = int(round(avg_routes * keep_ratio))
+
+    kept = max(min_keep, kept)
+
+    if max_keep is not None:
+        kept = min(kept, max_keep)
+
+    return kept
+
 def GA(
     parent,
     route,
     par1,
     par2,
     par3,
-    dimension: int,
-    capacity: float,
-    nodes: Dict[int, Dict[str, Any]],
-    dist_matrix=None,
-    nearest_neighbors=None,
     use_neural_fill: bool = True,
     neural_ckpt_path: Optional[str] = os.path.join(
         "Train_Neural",
         "checkpoints_neural_fill_v2",
-        "model_best_sampling.pt",
+        "model_best_greedy.pt",
     ),
-    neural_decode_type: str = "sampling",
-    num_good_routes_per_parent: int = 7,
-    max_kept_routes: int = 7,
-    selection_trials: int = 10,
-    route_select_temperature: float = 0.8,
+    neural_decode_type: str = "greedy",
+
+    # lấy đủ candidate route từ mỗi parent
+    num_good_routes_per_parent: int = 12,
+
+    # giữ lại theo tỉ lệ route, không hard-code số route
+    keep_route_ratio: float = 0.25,
+
+    # giới hạn an toàn
+    min_kept_routes: int = 3,
+    max_kept_routes_cap: int = 12,
+
+    selection_trials: int = 8,
+    route_select_temperature: float = 0.9,
 ):
     """
     GA crossover:
@@ -648,23 +595,23 @@ def GA(
     2. Chọn route giữ lại bằng weighted-greedy, không chọn route trùng customer.
     3. Remaining customers được fill bằng neural hoặc random.
     4. Thử nhiều lần và trả child tốt nhất.
-
-    Lưu ý:
-    - Không tự read_data trong GA.py nữa.
-    - dimension, capacity, nodes, dist_matrix được truyền từ main.py.
-    - dist_matrix dùng để tránh gọi euclid/sqrt lặp lại.
     """
-    _ = nearest_neighbors  # GA chưa cần dùng KNN, giữ tham số để đồng bộ pipeline.
-
     resolved_ckpt_path = _resolve_ckpt_path(neural_ckpt_path)
 
+    parent_indices = [par1, par2, par3]
+
+    dynamic_max_kept_routes = _compute_kept_routes_by_ratio(
+        route=route,
+        parent_indices=parent_indices,
+        keep_ratio=keep_route_ratio,
+        min_keep=min_kept_routes,
+        max_keep=max_kept_routes_cap,
+    )
+    
     route_candidates = _collect_route_candidates(
         parent=parent,
         route=route,
-        parent_indices=[par1, par2, par3],
-        nodes_data=nodes,
-        capacity_value=capacity,
-        dist_matrix=dist_matrix,
+        parent_indices=parent_indices,
         num_good_routes=num_good_routes_per_parent,
     )
 
@@ -675,12 +622,11 @@ def GA(
     warned_neural_failure = False
 
     all_vertices = set(range(2, dimension + 1))
-    expected_len = dimension - 1
 
-    for _trial in range(selection_trials):
+    for _ in range(selection_trials):
         kept_routes = select_good_routes_weighted_greedy(
             route_candidates=route_candidates,
-            max_kept_routes=max_kept_routes,
+            max_kept_routes=dynamic_max_kept_routes,
             temperature=route_select_temperature,
         )
 
@@ -699,56 +645,53 @@ def GA(
                         ckpt_path=resolved_ckpt_path,
                         decode_type=neural_decode_type,
                     )
-
                 except Exception as e:
                     if not warned_neural_failure:
-                        print(
-                            "[WARN] Neural fill failed. "
-                            f"Fallback to random fill. Error: {e}"
-                        )
+                        print(f"[WARN] Neural fill failed. Fallback to random fill. Error: {e}")
                         warned_neural_failure = True
 
                     fallback_vertices = list(remaining_vertices)
                     random.shuffle(fallback_vertices)
 
                     fill_perm, fill_markers = _random_fill_remaining(
-                        remaining_vertices=fallback_vertices,
-                        nodes_data=nodes,
-                        capacity_value=capacity,
+                        fallback_vertices,
+                        nodes,
+                        capacity,
                     )
             else:
                 fallback_vertices = list(remaining_vertices)
                 random.shuffle(fallback_vertices)
 
                 fill_perm, fill_markers = _random_fill_remaining(
-                    remaining_vertices=fallback_vertices,
-                    nodes_data=nodes,
-                    capacity_value=capacity,
+                    fallback_vertices,
+                    nodes,
+                    capacity,
                 )
 
             child_permutation.extend(fill_perm)
             child_route_markers.extend(fill_markers)
 
+        expected_len = dimension - 1
+
         if len(child_permutation) != expected_len:
             raise ValueError(
-                "Child permutation length mismatch: "
+                f"Child permutation length mismatch: "
                 f"got {len(child_permutation)}, expected {expected_len}"
             )
 
         if len(child_route_markers) != expected_len:
             raise ValueError(
-                "Child route marker length mismatch: "
+                f"Child route marker length mismatch: "
                 f"got {len(child_route_markers)}, expected {expected_len}"
             )
 
         if len(set(child_permutation)) != expected_len:
             raise ValueError("Child has duplicated customers.")
 
-        child_fitness = _solution_fitness(
-            permutation=child_permutation,
-            route_markers=child_route_markers,
-            nodes_data=nodes,
-            dist_matrix=dist_matrix,
+        child_fitness = get_fitness(
+            child_permutation,
+            child_route_markers,
+            nodes,
         )
 
         if child_fitness < best_fitness:
